@@ -29,13 +29,7 @@ class _LeitorAppState extends State<LeitorApp> {
       title: 'Leitor Palavra por Palavra',
       themeMode: themeMode,
       theme: ThemeData.light(),
-      darkTheme: ThemeData.dark().copyWith(
-        primaryColor: Colors.teal,
-        sliderTheme: SliderThemeData(
-          activeTrackColor: Colors.teal,
-          thumbColor: Colors.tealAccent,
-        ),
-      ),
+      darkTheme: ThemeData.dark(),
       home: LeitorPage(onToggleTheme: alternarTema),
     );
   }

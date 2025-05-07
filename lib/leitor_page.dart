@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io' show File;
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show kIsWeb;
@@ -6,7 +7,6 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:pdf_text/pdf_text.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'favoritos_page.dart';
 
 class LeitorPage extends StatefulWidget {
   final VoidCallback onToggleTheme;
@@ -20,195 +20,185 @@ class _LeitorPageState extends State<LeitorPage> {
   List<String> palavras = [];
   Set<int> favoritos = {};
   int indexAtual = 0;
+  String? nomeArquivo;
   Timer? timer;
   int velocidadeMs = 500;
-  Color corPalavra = Colors.white;
-  bool modoAuto = false;
   bool foiParado = false;
-  String? nomeArquivo;
+  bool modoAuto = false;
+  Color corPalavra = Colors.white;
+  Map<String, dynamic> arquivosSalvos = {};
 
   @override
   void initState() {
     super.initState();
-    carregarProgresso();
+    carregarArquivosSalvos();
   }
 
-  Future<void> carregarProgresso() async {
+  Future<void> carregarArquivosSalvos() async {
     final prefs = await SharedPreferences.getInstance();
-    indexAtual = prefs.getInt('indexAtual') ?? 0;
-    setState(() {});
+    final data = prefs.getString('arquivosSalvos');
+    if (data != null) {
+      arquivosSalvos = jsonDecode(data);
+    }
   }
 
-  Future<void> salvarProgresso() async {
+  Future<void> salvarArquivos() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('indexAtual', indexAtual);
+    await prefs.setString('arquivosSalvos', jsonEncode(arquivosSalvos));
   }
 
-void escolherArquivo() async {
-  pararLeitura();
+  Future<void> escolherArquivo() async {
+    pararLeitura();
+    FilePickerResult? resultado = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['txt', 'pdf'],
+      withData: true,
+    );
 
-  FilePickerResult? resultado = await FilePicker.platform.pickFiles(
-    type: FileType.custom,
-    allowedExtensions: ['txt', 'pdf'],
-    withData: true,
-  );
+    if (resultado == null) return;
 
-  if (resultado == null) return;
+    String conteudo = '';
+    String? nome = resultado.files.single.name;
 
-  String conteudo = '';
-  String? nome = resultado.files.single.name;
+    if (kIsWeb) {
+      Uint8List? fileBytes = resultado.files.single.bytes;
+      if (nome != null && nome.endsWith('.pdf')) {
+        mostrarAlerta('Leitura de PDF no navegador ainda não é suportada.');
+        return;
+      }
+      if (nome != null && nome.endsWith('.txt') && fileBytes != null) {
+        conteudo = String.fromCharCodes(fileBytes);
+      }
+    } else {
+      String? path = resultado.files.single.path;
+      if (path != null && path.endsWith('.pdf')) {
+        PDFDoc doc = await PDFDoc.fromPath(path);
+        conteudo = await doc.text;
+      } else if (path != null && path.endsWith('.txt')) {
+        File file = File(path);
+        conteudo = await file.readAsString();
+      }
+    }
 
-  if (kIsWeb) {
-    // 👉 WEB: usa apenas bytes
-    Uint8List? fileBytes = resultado.files.single.bytes;
-
-    if (nome != null && nome.endsWith('.pdf')) {
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: Text('Aviso'),
-          content: Text('Leitura de PDF no navegador ainda não é suportada.'),
-          actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text('OK'))],
-        ),
-      );
+    if (conteudo.isEmpty) {
+      mostrarAlerta('Erro ao ler o arquivo.');
       return;
     }
 
-    if (nome != null && nome.endsWith('.txt')) {
-      if (fileBytes != null) {
-        conteudo = String.fromCharCodes(fileBytes);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erro: arquivo vazio ou sem suporte no navegador.')),
-        );
-        return;
-      }
-    }
-  } else {
-    // 👉 MOBILE/DESKTOP: usa apenas path
-    String? path = resultado.files.single.path;
-
-    if (path != null && path.endsWith('.pdf')) {
-      PDFDoc doc = await PDFDoc.fromPath(path);
-      conteudo = await doc.text;
-    } else if (path != null && path.endsWith('.txt')) {
-      File file = File(path);
-      conteudo = await file.readAsString();
-    }
+    carregarConteudo(nome, conteudo);
   }
 
-  if (conteudo.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Erro ao ler o arquivo.')),
+  void carregarConteudo(String? nome, String conteudo) {
+    final novasPalavras = conteudo
+        .replaceAll('\n', ' \n ')
+        .split(RegExp(r'\s+'))
+        .where((p) => p.trim().isNotEmpty)
+        .toList();
+
+    int indiceSalvo = arquivosSalvos[nome]?['indexAtual'] ?? 0;
+
+    setState(() {
+      palavras = novasPalavras;
+      indexAtual = indiceSalvo;
+      nomeArquivo = nome;
+    });
+
+    arquivosSalvos[nome!] = {'conteudo': conteudo, 'indexAtual': indexAtual};
+    salvarArquivos();
+    iniciarLeitura();
+  }
+
+  void mostrarAlerta(String mensagem) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text('Aviso'),
+        content: Text(mensagem),
+        actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text('OK'))],
+      ),
     );
-    return;
   }
-
-  List<String> novasPalavras = conteudo
-      .replaceAll('\n', ' \n ')
-      .split(RegExp(r'\s+'))
-      .where((p) => p.trim().isNotEmpty)
-      .toList();
-
-  setState(() {
-    palavras = novasPalavras;
-    indexAtual = 0;
-    foiParado = false;
-    nomeArquivo = nome;
-  });
-
-  iniciarLeitura();
-}
-
 
   void iniciarLeitura() {
     if (palavras.isEmpty) return;
-
     pararLeitura();
 
-    timer = Timer.periodic(Duration(milliseconds: velocidadeMs), (timer) async {
+    timer = Timer.periodic(Duration(milliseconds: velocidadeMs), (_) async {
       if (indexAtual < palavras.length) {
         String palavraAtual = palavras[indexAtual];
-
-        if (palavraAtual == '\n') {
-          corPalavra = Colors.greenAccent;
-        } else if (palavraAtual.endsWith('.') ||
-            palavraAtual.endsWith('!') ||
-            palavraAtual.endsWith('?')) {
-          corPalavra = Colors.blueAccent;
-        } else {
-          corPalavra = Colors.white;
-        }
+        corPalavra = palavraAtual == '\n'
+            ? Colors.greenAccent
+            : (palavraAtual.endsWith('.') || palavraAtual.endsWith('!') || palavraAtual.endsWith('?'))
+                ? Colors.blueAccent
+                : Colors.white;
 
         setState(() {});
-
-        int pausa = velocidadeMs;
-        if (palavraAtual == '\n') {
-          pausa = velocidadeMs * 3;
-        } else if (palavraAtual.endsWith('.') ||
-            palavraAtual.endsWith('!') ||
-            palavraAtual.endsWith('?')) {
-          pausa = velocidadeMs * 2;
-        }
+        int pausa = palavraAtual == '\n'
+            ? velocidadeMs * 3
+            : (palavraAtual.endsWith('.') || palavraAtual.endsWith('!') || palavraAtual.endsWith('?'))
+                ? velocidadeMs * 2
+                : velocidadeMs;
 
         await Future.delayed(Duration(milliseconds: pausa));
-
         setState(() {
           indexAtual++;
+          arquivosSalvos[nomeArquivo!]['indexAtual'] = indexAtual;
         });
+        salvarArquivos();
 
-        await salvarProgresso();
-
-        if (indexAtual >= palavras.length) {
-          if (modoAuto) {
-            indexAtual = 0;
-            iniciarLeitura();
-          } else {
-            timer.cancel();
-            setState(() {
-              foiParado = true;
-            });
-          }
+        if (indexAtual >= palavras.length && modoAuto) {
+          indexAtual = 0;
+          iniciarLeitura();
         }
       }
     });
-
-    setState(() {
-      foiParado = false;
-    });
+    setState(() => foiParado = false);
   }
 
   void pararLeitura() {
     timer?.cancel();
-    setState(() {
-      foiParado = true;
-    });
+    setState(() => foiParado = true);
   }
 
-  void togglePlayPause() {
-    if (timer != null && timer!.isActive) {
-      pararLeitura();
-    } else {
-      iniciarLeitura();
-    }
+  void abrirMenuArquivos() {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => ListView(
+        children: arquivosSalvos.keys.map((nome) {
+          return ListTile(
+            title: Text(nome),
+            onTap: () {
+              carregarConteudo(nome, arquivosSalvos[nome]['conteudo']);
+              Navigator.pop(context);
+            },
+          );
+        }).toList(),
+      ),
+    );
   }
 
   void voltar10() {
     setState(() {
       indexAtual = (indexAtual - 10).clamp(0, palavras.length - 1);
+      arquivosSalvos[nomeArquivo!]['indexAtual'] = indexAtual;
     });
+    salvarArquivos();
   }
 
   void pular10() {
     setState(() {
       indexAtual = (indexAtual + 10).clamp(0, palavras.length - 1);
+      arquivosSalvos[nomeArquivo!]['indexAtual'] = indexAtual;
     });
+    salvarArquivos();
   }
 
   void reiniciarLeitura() {
     setState(() {
       indexAtual = 0;
+      arquivosSalvos[nomeArquivo!]['indexAtual'] = indexAtual;
     });
+    salvarArquivos();
     iniciarLeitura();
   }
 
@@ -228,118 +218,53 @@ void escolherArquivo() async {
     });
   }
 
-  void abrirTelaFavoritos() {
-    Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => FavoritosPage(
-          palavras: palavras,
-          favoritos: favoritos,
-          onSelecionar: (indice) {
-            setState(() {
-              indexAtual = indice;
-            });
-            Navigator.pop(context);
-          },
-        ),
-      ),
-    );
-  }
-
   void mudarVelocidade(double novaVelocidadeMs) {
     setState(() {
       velocidadeMs = novaVelocidadeMs.toInt();
     });
-
     if (timer != null && timer!.isActive) {
       iniciarLeitura();
     }
   }
 
   @override
-  void dispose() {
-    pararLeitura();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     String palavraAtual = palavras.isNotEmpty && indexAtual < palavras.length
         ? palavras[indexAtual]
-        : 'Selecione um arquivo';
-
-    if (palavraAtual == '\n') {
-      palavraAtual = '¶';
-    }
-
-    String contagem = palavras.isNotEmpty
-        ? '${indexAtual + 1} / ${palavras.length} palavras'
-        : '';
-
+        : 'Selecione ou carregue um arquivo';
+    if (palavraAtual == '\n') palavraAtual = '¶';
     bool isFavorito = favoritos.contains(indexAtual);
 
     return GestureDetector(
-      onTap: togglePlayPause,
+      onTap: () => foiParado ? iniciarLeitura() : pararLeitura(),
       child: Scaffold(
         appBar: AppBar(
           title: Text('Leitor Palavra por Palavra'),
           actions: [
-            IconButton(
-              icon: Icon(Icons.star),
-              onPressed: abrirTelaFavoritos,
-            ),
-            IconButton(
-              icon: Icon(Icons.color_lens),
-              onPressed: widget.onToggleTheme,
-            ),
+            IconButton(icon: Icon(Icons.menu_book), onPressed: abrirMenuArquivos),
+            IconButton(icon: Icon(Icons.color_lens), onPressed: widget.onToggleTheme),
           ],
         ),
         body: Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.all(16),
           child: Column(
             children: [
               if (nomeArquivo != null)
-                Text(
-                  'Arquivo: $nomeArquivo',
-                  style: TextStyle(fontSize: 16, color: Colors.tealAccent),
-                ),
+                Text('Arquivo: $nomeArquivo', style: TextStyle(fontSize: 16, color: Colors.tealAccent)),
               Expanded(
                 child: Center(
-                  child: Text(
-                    palavraAtual,
-                    style: TextStyle(
-                      fontSize: 40,
-                      fontWeight: FontWeight.bold,
-                      color: corPalavra,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
+                  child: Text(palavraAtual,
+                      style: TextStyle(fontSize: 40, fontWeight: FontWeight.bold, color: corPalavra),
+                      textAlign: TextAlign.center),
                 ),
               ),
-              Text(
-                contagem,
-                style: TextStyle(fontSize: 16, color: Colors.grey[300]),
-              ),
-              SizedBox(height: 10),
               Wrap(
                 spacing: 10,
                 children: [
-                  ElevatedButton(
-                    onPressed: escolherArquivo,
-                    child: Text('Escolher arquivo'),
-                  ),
-                  ElevatedButton(
-                    onPressed: reiniciarLeitura,
-                    child: Text('Reiniciar'),
-                  ),
-                  ElevatedButton(
-                    onPressed: voltar10,
-                    child: Text('← Voltar 10'),
-                  ),
-                  ElevatedButton(
-                    onPressed: pular10,
-                    child: Text('Pular 10 →'),
-                  ),
+                  ElevatedButton(onPressed: escolherArquivo, child: Text('Escolher arquivo')),
+                  ElevatedButton(onPressed: reiniciarLeitura, child: Text('Reiniciar')),
+                  ElevatedButton(onPressed: voltar10, child: Text('← Voltar 10')),
+                  ElevatedButton(onPressed: pular10, child: Text('Pular 10 →')),
                   ElevatedButton(
                     onPressed: alternarModoAuto,
                     child: Text(modoAuto ? 'Auto: ON' : 'Auto: OFF'),
