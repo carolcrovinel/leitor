@@ -34,6 +34,12 @@ class _LeitorPageState extends State<LeitorPage> {
     carregarArquivosSalvos();
   }
 
+  @override
+  void dispose() {
+    timer?.cancel();
+    super.dispose();
+  }
+
   Future<void> carregarArquivosSalvos() async {
     final prefs = await SharedPreferences.getInstance();
     final data = prefs.getString('arquivosSalvos');
